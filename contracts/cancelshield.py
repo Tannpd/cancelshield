@@ -30,6 +30,9 @@ class Contract(gl.Contract):
     policy_analysis:          TreeMap[u64, str]      # AI PR Analyst review
     policy_severity:          TreeMap[u64, str]      # "CRITICAL", "TRIVIAL", "NONE"
 
+    # Track total capital reserved to pay out active policies
+    total_reserved_coverage:  u256
+
     # ═══════════════════════════════════════════════════════════════════
     # CONSTRUCTOR
     # ═══════════════════════════════════════════════════════════════════
@@ -39,11 +42,24 @@ class Contract(gl.Contract):
         Note: TreeMaps are pre-initialized by the VM and must not be assigned here.
         """
         self.policies_count = 0
+        self.total_reserved_coverage = 0
+
+    # ═══════════════════════════════════════════════════════════════════
+    # PUBLIC METHOD: PROVIDE LIQUIDITY / CAPITAL TO THE PROTOCOL
+    # ═══════════════════════════════════════════════════════════════════
+    @gl.public.write.payable
+    def deposit_capital(self) -> None:
+        """
+        Allows underwriters or liquidity providers to deposit native GEN tokens
+        to back the insurance pool reserves.
+        """
+        if int(gl.message.value) <= 0:
+            raise UserError("Deposit amount must be positive.")
 
     # ═══════════════════════════════════════════════════════════════════
     # PUBLIC METHOD: BUY INSURANCE POLICY
     # ═══════════════════════════════════════════════════════════════════
-    @gl.public.write
+    @gl.public.write.payable
     def buy_policy(self) -> int:
         """
         Creators call this to purchase an active cancel insurance policy
@@ -53,16 +69,24 @@ class Contract(gl.Contract):
         if premium_val <= 0:
             raise UserError("You must deposit a positive GEN premium amount.")
 
+        coverage_val = premium_val * 5
+
+        # Reserve check: contract must have enough total balance to back all active promised coverage
+        new_reserved = int(self.total_reserved_coverage) + coverage_val
+        if int(self.balance) < new_reserved:
+            raise UserError("Insufficient underwriter capital in the pool to back this policy's coverage.")
+
         pid = self.policies_count
 
         self.policy_owner[pid]     = gl.message.sender_address
         self.policy_premium[pid]   = premium_val
-        self.policy_cover[pid]     = premium_val * 5
+        self.policy_cover[pid]     = coverage_val
         self.policy_status[pid]    = "ACTIVE"
         self.policy_drama_url[pid] = ""
         self.policy_analysis[pid]  = "Policy active. No claims filed."
         self.policy_severity[pid]  = "NONE"
 
+        self.total_reserved_coverage = new_reserved
         self.policies_count = int(pid) + 1
         return int(pid)
 
@@ -209,13 +233,19 @@ Respond ONLY with a valid JSON object matching the schema below. Do not wrap in 
 
         try:
             res = json.loads(consensus_json)
-        except Exception:
-            self.policy_analysis[policy_id] = "AI consensus failed due to unparseable evaluation results."
-            return
+        except Exception as e:
+            raise UserError(f"Malformed consensus output: {str(e)}")
+
+        if "error" in res:
+            raise UserError(f"Claim audit failed: {res.get('error')}. {res.get('pr_analysis', '')}")
 
         approved = bool(res.get("claim_approved", False))
         severity = str(res.get("offense_severity", "TRIVIAL")).strip().upper()
         analysis = str(res.get("pr_analysis", "Claim evaluation finished."))
+
+        # Reduce reserved coverage because this policy is no longer ACTIVE
+        cover_payout = int(self.policy_cover.get(policy_id, 0))
+        self.total_reserved_coverage = int(self.total_reserved_coverage) - cover_payout
 
         self.policy_drama_url[policy_id] = drama_url
         self.policy_analysis[policy_id]  = analysis
@@ -223,8 +253,6 @@ Respond ONLY with a valid JSON object matching the schema below. Do not wrap in 
 
         if approved:
             self.policy_status[policy_id] = "CLAIMED"
-            
-            cover_payout = int(self.policy_cover.get(policy_id, 0))
             
             # Reset cover amount first to prevent double-spending/re-entrancy
             self.policy_cover[policy_id] = 0

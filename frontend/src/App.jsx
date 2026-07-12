@@ -31,6 +31,7 @@ export default function App() {
     fetchPoliciesState,
     buyPolicy,
     fileClaim,
+    depositCapital,
     contractAddress
   } = useCancelShield();
 
@@ -44,6 +45,10 @@ export default function App() {
   // Drama URL claim form state
   const [dramaUrl, setDramaUrl] = useState('');
   const [claimErr, setClaimErr] = useState('');
+
+  // Underwrite pool state
+  const [depositAmt, setDepositAmt] = useState('50');
+  const [depositErr, setDepositErr] = useState('');
 
   const truncateAddr = (addr) => {
     if (!addr || addr === '0x0000000000000000000000000000000000000000') return 'N/A';
@@ -75,6 +80,17 @@ export default function App() {
       setDramaUrl('');
     } catch (err) {
       setClaimErr(err.message || 'Claim submission failed');
+    }
+  };
+
+  const handleDepositCapital = async (e) => {
+    e.preventDefault();
+    setDepositErr('');
+    try {
+      await depositCapital(depositAmt);
+      setDepositErr('');
+    } catch (err) {
+      setDepositErr(err.message || 'Deposit failed');
     }
   };
 
@@ -190,10 +206,35 @@ export default function App() {
               <Activity size={14} style={{ color: 'var(--accent-cyan)' }} />
               <span>Insurance Pool Stats</span>
             </h3>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
               <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Pool Reserves:</span>
               <span style={{ fontSize: '1.1rem', fontWeight: '700', color: 'var(--accent-cyan)' }}>{formatGen(contractBalance)} GEN</span>
             </div>
+            
+            <form onSubmit={handleDepositCapital} style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '10px' }}>
+              <div className="form-group" style={{ marginBottom: '8px' }}>
+                <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Underwrite Pool Capital (GEN)</label>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <input
+                    type="number"
+                    min="1"
+                    step="any"
+                    value={depositAmt}
+                    onChange={(e) => setDepositAmt(e.target.value)}
+                    disabled={loading || !address}
+                    style={{ padding: '4px 8px', fontSize: '0.8rem', flex: 1 }}
+                  />
+                  <button type="submit" className="btn btn-secondary" style={{ width: 'auto', padding: '4px 12px', fontSize: '0.8rem', whiteSpace: 'nowrap' }} disabled={loading || !address}>
+                    <span>Back Pool</span>
+                  </button>
+                </div>
+              </div>
+              {depositErr && (
+                <p style={{ color: 'var(--accent-red)', fontSize: '11px', marginTop: '4px' }}>
+                  {depositErr}
+                </p>
+              )}
+            </form>
           </div>
 
         </div>

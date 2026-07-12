@@ -14,6 +14,13 @@ function getReadClient() {
 }
 
 function getWriteClient(account) {
+  if (typeof account === 'string') {
+    return createClient({
+      chain: studionet,
+      account,
+      provider: window.ethereum,
+    });
+  }
   return createClient({ chain: studionet, account });
 }
 
@@ -65,24 +72,34 @@ export function useCancelShield() {
       setLoading(true);
       setError('');
       if (typeof window !== 'undefined' && window.ethereum) {
-        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-        const addr = accounts[0].toLowerCase();
-        setAddress(addr);
-        setGlAccount(addr);
-      } else {
-        // Ephemeral account fallback
-        let savedKey = localStorage.getItem('__cancelshield_sk');
-        let acct;
-        if (savedKey) {
-          acct = createAccount(savedKey);
-        } else {
-          acct = createAccount();
-          localStorage.setItem('__cancelshield_sk', acct.privateKey);
+        try {
+          const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+          const addr = accounts[0].toLowerCase();
+          
+          // Test snap connection. If it fails, fallback to Demo Wallet.
+          const client = getWriteClient(addr);
+          await client.connect();
+
+          setAddress(addr);
+          setGlAccount(addr);
+          return; // Success
+        } catch (walletErr) {
+          console.warn('MetaMask Snap not supported or connection failed, using Demo Wallet:', walletErr);
         }
-        const addr = acct.address.toLowerCase();
-        setAddress(addr);
-        setGlAccount(acct);
       }
+
+      // Ephemeral account fallback
+      let savedKey = localStorage.getItem('__cancelshield_sk');
+      let acct;
+      if (savedKey) {
+        acct = createAccount(savedKey);
+      } else {
+        acct = createAccount();
+        localStorage.setItem('__cancelshield_sk', acct.privateKey);
+      }
+      const addr = acct.address.toLowerCase();
+      setAddress(addr);
+      setGlAccount(acct);
     } catch (err) {
       console.error('Wallet connection failed:', err);
       setError('Wallet connection failed: ' + err.message);
@@ -145,6 +162,10 @@ export function useCancelShield() {
       const client = getWriteClient(glAccount);
       const valueWei = parseGen(premiumAmt);
       
+      if (typeof glAccount === 'string') {
+        await client.connect();
+      }
+
       const hash = await client.writeContract({
         address: CONTRACT_ADDRESS,
         functionName: 'buy_policy',
@@ -188,6 +209,11 @@ export function useCancelShield() {
 
     try {
       const client = getWriteClient(glAccount);
+      
+      if (typeof glAccount === 'string') {
+        await client.connect();
+      }
+
       const hash = await client.writeContract({
         address: CONTRACT_ADDRESS,
         functionName: 'file_claim',
@@ -217,6 +243,55 @@ export function useCancelShield() {
       setLoading(false);
     }
   };
+  
+  // Deposit Capital to pool
+  const depositCapital = async (amountGen) => {
+    if (!glAccount || !CONTRACT_ADDRESS) {
+      throw new Error('Wallet not connected');
+    }
+    setLoading(true);
+    setError('');
+    setTxHash('');
+    setTxStatus(`Depositing ${amountGen} GEN underwriter capital into pool...`);
+
+    try {
+      const client = getWriteClient(glAccount);
+      const valueWei = parseGen(amountGen);
+      
+      if (typeof glAccount === 'string') {
+        await client.connect();
+      }
+
+      const hash = await client.writeContract({
+        address: CONTRACT_ADDRESS,
+        functionName: 'deposit_capital',
+        args: [],
+        value: valueWei,
+      });
+      
+      setTxHash(hash);
+      setTxStatus('Depositing capital. Broadcasting reserve backing...');
+
+      const receipt = await client.waitForTransactionReceipt({ hash });
+      
+      const leaderReceipt = receipt.consensus_data?.leader_receipt?.[0];
+      if (leaderReceipt && leaderReceipt.execution_result === 'ERROR') {
+        const errorMsg = leaderReceipt.genvm_result?.stderr || 'Contract execution error';
+        throw new Error(errorMsg);
+      }
+
+      setTxStatus('Success! Pool reserves increased.');
+      await fetchPoliciesState();
+      return receipt;
+    } catch (err) {
+      console.error('Capital deposit failed:', err);
+      setError(err.message || 'Transaction failed');
+      setTxStatus('Failed');
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     if (CONTRACT_ADDRESS) {
@@ -236,6 +311,7 @@ export function useCancelShield() {
     fetchPoliciesState,
     buyPolicy,
     fileClaim,
+    depositCapital,
     contractAddress: CONTRACT_ADDRESS,
   };
 }
